@@ -1,0 +1,29 @@
+{
+  "name": "ai-proxy-server",
+  "version": "1.0.0",
+  "description": "Express server for Gemini AI API proxy",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "https-proxy-agent": "^8.0.0",
+    "undici": "^7.24.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  },
+  "keywords": [
+    "ai",
+    "gemini",
+    "proxy",
+    "express"
+  ],
+  "author": "",
+  "license": "MIT"
+}
