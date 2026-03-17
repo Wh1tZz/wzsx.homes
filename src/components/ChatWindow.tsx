@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { GoogleGenAI } from '@google/genai';
 import { X, Send, User, Bot, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -20,29 +21,17 @@ export default function ChatWindow({ isOpen, onClose }: ChatWindowProps) {
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [apiInitialized, setApiInitialized] = useState(false);
+  const aiRef = useRef<GoogleGenAI | null>(null);
 
   useEffect(() => {
-    // 检查代理服务器是否可用
-    const checkServer = async () => {
+    if (!aiRef.current) {
       try {
-        const response = await fetch('http://localhost:3001/api/health');
-        if (response.ok) {
-          setApiInitialized(true);
-        } else {
-          setApiInitialized(false);
-        }
-      } catch (error) {
-        console.error("代理服务器不可用:", error);
-        setApiInitialized(false);
+        aiRef.current = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      } catch (e) {
+        console.error("Failed to initialize Gemini API", e);
       }
-    };
-
-    if (isOpen) {
-      checkServer();
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [isOpen]);
+  }, []);
 
   useEffect(() => {
     if (isOpen) {
@@ -58,10 +47,10 @@ export default function ChatWindow({ isOpen, onClose }: ChatWindowProps) {
     setInput('');
     setIsTyping(true);
 
-    if (!apiInitialized) {
+    if (!aiRef.current) {
       setMessages(prev => [...prev, {
         id: (Date.now() + 1).toString(),
-        text: '抱歉，AI服务未正确初始化，请检查代理服务器是否启动。',
+        text: '抱歉，AI服务未正确初始化，请检查API Key配置。',
         sender: 'ai'
       }]);
       setIsTyping(false);
@@ -69,25 +58,23 @@ export default function ChatWindow({ isOpen, onClose }: ChatWindowProps) {
     }
 
     try {
-      const response = await fetch('http://localhost:3001/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
-          messages: [...messages, userMsg] 
-        })
+      const contents = messages.map(m => ({
+        role: m.sender === 'user' ? 'user' : 'model',
+        parts: [{ text: m.text }]
+      }));
+      contents.push({ role: 'user', parts: [{ text: userMsg.text }] });
+
+      const response = await aiRef.current.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: contents,
+        config: {
+          systemInstruction: '你是一个名为“文子双汐”的数字艺术工作室的AI客服助理。你负责解答访客的问题，介绍工作室的艺术风格（结合了传统书法、水墨与现代3D数字艺术），并提供联系方式。你的语气应该专业、优雅、富有艺术气息。',
+        }
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      
       const aiMsg: Message = {
         id: (Date.now() + 1).toString(),
-        text: data.text || '抱歉，我暂时无法回答这个问题。',
+        text: response.text || '抱歉，我暂时无法回答这个问题。',
         sender: 'ai'
       };
       setMessages(prev => [...prev, aiMsg]);
@@ -112,7 +99,7 @@ export default function ChatWindow({ isOpen, onClose }: ChatWindowProps) {
           animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
           exit={{ opacity: 0, y: 20, scale: 0.95, filter: 'blur(10px)' }}
           transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-          className="fixed bottom-6 right-6 w-80 md:w-96 h-[500px] max-h-[80vh] bg-black/80 backdrop-blur-xl border border-white/20 rounded-2xl shadow-2xl flex flex-col z-50 overflow-hidden font-sans"
+          className="fixed bottom-4 right-4 md:bottom-6 md:right-6 w-[calc(100vw-2rem)] md:w-96 h-[500px] max-h-[80vh] bg-black/80 backdrop-blur-xl border border-white/20 rounded-2xl shadow-2xl flex flex-col z-50 overflow-hidden font-sans"
         >
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-white/5">

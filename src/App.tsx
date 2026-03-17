@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import * as THREE from 'three';
@@ -257,8 +257,44 @@ function HomePage() {
       try {
         const results = await Promise.all(bvids.map(async (bvid) => {
           const apiUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
-          const response = await fetch(`https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(apiUrl)}`);
-          const data = await response.json();
+          
+          // Try multiple proxies in case one is down or blocked
+          const proxies = [
+            `https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}`,
+            `https://corsproxy.io/?${encodeURIComponent(apiUrl)}`,
+            `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(apiUrl)}`
+          ];
+
+          // 1. Check Cache first
+          const cacheKey = `bili_v2_${bvid}`;
+          const cached = localStorage.getItem(cacheKey);
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              if (Date.now() - parsed.timestamp < 1000 * 60 * 60 * 24 * 7) { // 7 days cache
+                return parsed.data;
+              }
+            } catch (e) {}
+          }
+
+          let data = null;
+          for (const proxy of proxies) {
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s strict timeout per proxy
+              const response = await fetch(proxy, { signal: controller.signal });
+              clearTimeout(timeoutId);
+              
+              if (!response.ok) continue;
+              const result = await response.json();
+              if (result && result.code === 0) {
+                data = result;
+                break; // Success, exit the proxy loop
+              }
+            } catch (e) {
+              // Timeout or network error, silently continue to next proxy
+            }
+          }
           
           if (data && data.code === 0) {
             const pubDate = new Date(data.data.pubdate * 1000);
@@ -267,7 +303,7 @@ function HomePage() {
               coverUrl = coverUrl.replace('http://', 'https://');
             }
             
-            return {
+            const formattedResult = {
               bvid,
               title: data.data.title,
               author: data.data.owner.name,
@@ -275,8 +311,25 @@ function HomePage() {
               year: pubDate.getFullYear().toString(),
               cover: coverUrl
             };
+            
+            // Save to cache
+            localStorage.setItem(cacheKey, JSON.stringify({
+              timestamp: Date.now(),
+              data: formattedResult
+            }));
+            
+            return formattedResult;
           }
-          return null;
+          
+          // Fallback static data if all proxies fail
+          return {
+            bvid,
+            title: `Bilibili 视频 (${bvid})`,
+            author: "文子双汐",
+            category: "科技",
+            year: "2024",
+            cover: `https://picsum.photos/seed/${bvid}/1920/1080?blur=2`
+          };
         }));
         
         const validResults = results.filter(r => r !== null);
@@ -284,7 +337,7 @@ function HomePage() {
           setVideosInfo(prev => prev.map(p => validResults.find(r => r.bvid === p.bvid) || p));
         }
       } catch (error) {
-        // Silently fail and use initial state if fetch fails
+        console.error("Failed to fetch Bilibili info:", error);
       }
     };
     fetchBilibiliInfo();
@@ -314,26 +367,33 @@ function HomePage() {
     } else {
       gsap.to(container, {
         scrollTo: { y: sectionElements[index].offsetTop, autoKill: false },
-        duration: 1.5,
-        ease: "power4.inOut", // High-end damping effect
+        duration: 1.2,
+        ease: "expo.inOut", // Snappier, smoother damping
         onUpdate: () => ScrollTrigger.update(),
         onComplete: () => {
           setTimeout(() => {
             isAnimating.current = false;
-          }, 200); // Small delay to prevent double-scroll
+          }, 100); // Shorter delay
         }
       });
     }
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (location.state && (location.state as any).scrollTo === 'work') {
-      // Small delay to ensure DOM is ready
-      setTimeout(() => {
-        goToSection(1, true);
-        // Clear the state so it doesn't re-trigger on refresh
-        window.history.replaceState({}, document.title);
-      }, 100);
+      // Set scroll position immediately before paint
+      const container = containerRef.current;
+      if (container) {
+        const sectionElements = Array.from(container.querySelectorAll('section')) as HTMLElement[];
+        if (sectionElements.length > 1) {
+          gsap.set(container, { scrollTo: { y: sectionElements[1].offsetTop, autoKill: false } });
+          ScrollTrigger.update();
+          currentSectionIndex.current = 1;
+          setActiveSection('work');
+        }
+      }
+      // Clear the state so it doesn't re-trigger on refresh
+      window.history.replaceState({}, document.title);
     }
   }, [location]);
 
@@ -604,6 +664,9 @@ function HomePage() {
       document.body.style.cursor = 'default';
       geometry.dispose();
       material.dispose();
+      particlesGeometry.dispose();
+      particlesMaterial.dispose();
+      if (particleTexture) particleTexture.dispose();
       renderer.dispose();
       ctx.revert(); // Properly clean up all GSAP animations and ScrollTriggers
     };
@@ -628,25 +691,25 @@ function HomePage() {
 
       {/* Navigation */}
       <nav 
-        className="fixed top-0 left-0 w-full p-8 md:p-10 flex justify-between items-center z-20 mix-blend-difference"
+        className="fixed top-0 left-0 w-full p-4 md:p-10 flex justify-between items-center z-20 mix-blend-difference"
       >
         <div 
-          className={`flex items-center gap-2 cursor-pointer transition-opacity duration-500 ease-in-out ${activeSection === 'hero' ? 'opacity-80' : 'opacity-30'} hover:opacity-100`}
+          className={`flex items-center gap-1 md:gap-2 cursor-pointer transition-opacity duration-500 ease-in-out ${activeSection === 'hero' ? 'opacity-80' : 'opacity-30'} hover:opacity-100`}
           onClick={() => goToSection(0)}
         >
           <img 
             src="/logo.jpg" 
             alt="文子双汐" 
-            className="h-8 md:h-10 w-auto object-contain"
+            className="h-6 md:h-10 w-auto object-contain"
           />
-          <div className="flex items-center h-8 md:h-10 ml-1">
-            <span className="text-white font-black tracking-[0.3em] text-xs md:text-sm uppercase border-y-[1.5px] border-white py-[3px] leading-none">
+          <div className="flex items-center h-6 md:h-10 ml-1">
+            <span className="text-white font-black tracking-[0.2em] md:tracking-[0.3em] text-[10px] md:text-sm uppercase border-y-[1px] md:border-y-[1.5px] border-white py-[2px] md:py-[3px] leading-none">
               STUDIO
             </span>
           </div>
         </div>
-        <div className="flex gap-8 items-center">
-          <div className="flex gap-8 md:gap-12 text-base md:text-lg font-semibold tracking-[0.1em] uppercase">
+        <div className="flex gap-4 md:gap-8 items-center">
+          <div className="flex gap-4 md:gap-12 text-xs md:text-lg font-semibold tracking-[0.1em] uppercase">
             <button 
               onClick={() => goToSection(1)}
               className={`${activeSection === 'work' ? 'opacity-80' : 'opacity-40'} hover:opacity-100 transition-opacity duration-300 ease-in-out cursor-pointer`}
@@ -672,20 +735,20 @@ function HomePage() {
       {/* Hero Section */}
       <section className="relative z-10 h-screen w-full flex flex-col items-center justify-center py-20">
         <div className="text-center pointer-events-none flex flex-col items-center">
-          <h1 className="text-[6rem] md:text-[9rem] lg:text-[12rem] font-xiaowei antialiased tracking-widest leading-none mb-4 text-white/90 ml-[0.075em] drop-shadow-2xl">
+          <h1 className="text-[3.5rem] sm:text-[5rem] md:text-[9rem] lg:text-[12rem] font-xiaowei antialiased tracking-widest leading-none mb-4 text-white/90 ml-[0.075em] drop-shadow-2xl">
             文子双汐
           </h1>
-          <div className="text-xs md:text-sm lg:text-base font-en font-light tracking-[1em] uppercase opacity-40 mb-8 ml-[0.5em]">
+          <div className="text-[10px] sm:text-xs md:text-sm lg:text-base font-en font-light tracking-[0.5em] md:tracking-[1em] uppercase opacity-40 mb-8 ml-[0.5em]">
             Moonlit Twin Tides
           </div>
-          <div className="text-xl md:text-3xl lg:text-4xl font-serif font-light tracking-[0.8em] opacity-50 mt-2 ml-[0.4em]">
+          <div className="text-sm sm:text-xl md:text-3xl lg:text-4xl font-serif font-light tracking-[0.4em] md:tracking-[0.8em] opacity-50 mt-2 ml-[0.4em]">
             以文载道，汐动未来
           </div>
         </div>
         
         {/* Scroll Hint */}
         <div 
-          className="absolute bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-5 cursor-pointer group"
+          className="absolute bottom-20 md:bottom-12 left-1/2 -translate-x-1/2 flex flex-col items-center gap-5 cursor-pointer group"
           onClick={() => goToSection(1)}
         >
           <span className="text-[10px] tracking-[0.5em] font-light opacity-40 group-hover:opacity-100 transition-opacity duration-500 ml-[0.25em]">
@@ -731,14 +794,6 @@ function HomePage() {
                   />
                 ) : null}
                 
-                {/* Gradient Overlay for Text Readability */}
-                <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/80 to-transparent pointer-events-none" />
-
-                {/* Title Inside */}
-                <div className="absolute bottom-6 left-6 md:bottom-8 md:left-8 z-10">
-                  <h3 className="text-lg md:text-2xl font-light tracking-wide text-white drop-shadow-md">{videosInfo[0].title}</h3>
-                </div>
-
                 {/* Play Button */}
                 <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-black/20 backdrop-blur-[2px]">
                   <span className="w-20 h-20 rounded-full border border-white/30 flex items-center justify-center bg-black/40 text-white backdrop-blur-md transform scale-90 group-hover:scale-100 transition-transform duration-500">
@@ -748,12 +803,17 @@ function HomePage() {
                   </span>
                 </div>
               </div>
+
+              {/* Title Outside */}
+              <div className="featured-title mt-4 md:mt-6 text-left w-full">
+                <h3 className="text-base md:text-2xl font-light tracking-wide text-white/90 drop-shadow-sm">{videosInfo[0].title}</h3>
+              </div>
             </div>
           </div>
         )}
         
         {/* View More Button (Absolute bottom right) */}
-        <div className="absolute bottom-8 right-8 z-20">
+        <div className="absolute bottom-48 md:bottom-12 right-6 md:right-12 z-20">
           <Link to="/works" className="group/btn flex items-center gap-4 text-sm md:text-base font-medium tracking-[0.2em] uppercase opacity-80 hover:opacity-100 transition-opacity duration-300">
             <span>显示更多</span>
             <span className="w-12 h-[1px] bg-white/80 group-hover/btn:w-16 transition-all duration-300"></span>
@@ -762,13 +822,13 @@ function HomePage() {
       </section>
 
       {/* About Section */}
-      <section id="about" className="relative z-10 h-screen w-full flex flex-col items-center justify-center p-20 border-t border-white/5 bg-white/[0.02]">
+      <section id="about" className="relative z-10 h-screen w-full flex flex-col items-center justify-center p-6 md:p-20 border-t border-white/5 bg-white/[0.02]">
         <div className="max-w-2xl w-full text-center">
-          <h2 className="text-4xl md:text-6xl font-light tracking-tight mb-12 opacity-80 italic font-serif">关于工作室</h2>
-          <p className="text-lg md:text-xl font-light leading-relaxed opacity-60 mb-8">
+          <h2 className="text-4xl md:text-6xl font-light tracking-tight mb-8 md:mb-12 opacity-80 italic font-serif">关于工作室</h2>
+          <p className="text-base md:text-xl font-light leading-relaxed opacity-60 mb-8">
             我们是一家有点抽象艺术的工作室，欢迎加入我们一起来玩呀！
           </p>
-          <div className="grid grid-cols-3 gap-8 pt-12 border-t border-white/10">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 md:gap-8 pt-8 md:pt-12 border-t border-white/10">
             <div>
               <div className="text-2xl font-light mb-2">0</div>
               <div className="text-[10px] tracking-[0.2em] uppercase opacity-40">获得奖项</div>
@@ -786,13 +846,13 @@ function HomePage() {
       </section>
 
       {/* Contact Section */}
-      <section id="contact" className="relative z-10 h-screen w-full flex flex-col items-center justify-center p-20 border-t border-white/5">
+      <section id="contact" className="relative z-10 h-screen w-full flex flex-col items-center justify-center p-6 md:p-20 border-t border-white/5">
         <div className="max-w-4xl w-full text-center">
-          <h2 className="text-5xl md:text-8xl font-light tracking-tighter mb-12 opacity-90">让我们开始<br/>新的创作</h2>
-          <a href="mailto:894204540@qq.com" className="inline-block text-xl md:text-2xl font-light border-b border-white/20 pb-2 hover:border-white transition-colors duration-300 mb-8">
+          <h2 className="text-4xl md:text-8xl font-light tracking-tighter mb-8 md:mb-12 opacity-90">让我们开始<br/>新的创作</h2>
+          <a href="mailto:894204540@qq.com" className="inline-block text-lg md:text-2xl font-light border-b border-white/20 pb-2 hover:border-white transition-colors duration-300 mb-8">
             894204540@qq.com
           </a>
-          <div className="flex gap-8 justify-center mt-4">
+          <div className="flex gap-6 md:gap-8 justify-center mt-4">
             <a href="https://github.com/Wh1tZz" target="_blank" rel="noopener noreferrer" className="opacity-40 hover:opacity-100 cursor-pointer transition-opacity">
               <GithubIcon size={24} />
             </a>
@@ -823,61 +883,85 @@ function HomePage() {
       <div className="fixed inset-0 pointer-events-none z-50 opacity-[0.03] mix-blend-overlay bg-[url('https://grainy-gradients.vercel.app/noise.svg')]" />
       
       {/* Video Modal */}
-      {isVideoModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 md:p-10">
-          <button 
-            className="absolute top-6 right-6 text-white/70 hover:text-white z-[101] transition-colors"
-            onClick={() => setIsVideoModalOpen(false)}
+      <AnimatePresence>
+        {isVideoModalOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4 md:p-10"
           >
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
-          <div className="relative w-full max-w-5xl aspect-video bg-black rounded-lg overflow-hidden shadow-2xl">
-            <iframe 
-              src={`//player.bilibili.com/player.html?bvid=${activeBvid}&page=1&high_quality=1&danmaku=0&autoplay=1`}
-              className="w-full h-full border-0"
-              scrolling="no"
-              frameBorder="no"
-              allowFullScreen={true}
-            ></iframe>
-          </div>
-        </div>
-      )}
+            <button 
+              className="absolute top-6 right-6 text-white/70 hover:text-white z-[101] transition-colors"
+              onClick={() => setIsVideoModalOpen(false)}
+            >
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1], delay: 0.1 }}
+              className="relative w-full max-w-5xl aspect-video bg-black rounded-lg overflow-hidden shadow-2xl"
+            >
+              <iframe 
+                src={`//player.bilibili.com/player.html?bvid=${activeBvid}&page=1&high_quality=1&danmaku=0&autoplay=1`}
+                className="w-full h-full border-0"
+                scrolling="no"
+                frameBorder="no"
+                allowFullScreen={true}
+              ></iframe>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* WeChat Modal */}
-      {isWechatModalOpen && (
-        <div 
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 md:p-10"
-          onClick={() => setIsWechatModalOpen(false)}
-        >
-          <button 
-            className="absolute top-6 right-6 text-white/70 hover:text-white z-[101] transition-colors"
+      <AnimatePresence>
+        {isWechatModalOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4 md:p-10"
             onClick={() => setIsWechatModalOpen(false)}
           >
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
-          
-          <div 
-            className="relative w-full max-w-sm aspect-[3/4] bg-white rounded-xl overflow-hidden shadow-2xl flex items-center justify-center"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <img 
-              src="/wechat-qr.jpg.jpg" 
-              alt="WeChat QR Code"
-              className="w-full h-full object-contain"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-                e.currentTarget.parentElement!.innerHTML = '<div class="text-black text-center p-8"><p class="text-xl font-bold mb-4">请上传二维码</p><p class="text-sm text-gray-500">请将您的二维码图片重命名为 <b>wechat-qr.jpg.jpg</b> 并上传到 <b>public</b> 文件夹中。</p></div>';
-              }}
-            />
-          </div>
-        </div>
-      )}
+            <button 
+              className="absolute top-6 right-6 text-white/70 hover:text-white z-[101] transition-colors"
+              onClick={() => setIsWechatModalOpen(false)}
+            >
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+            
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1], delay: 0.1 }}
+              className="relative w-full max-w-sm aspect-[3/4] bg-white rounded-xl overflow-hidden shadow-2xl flex items-center justify-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <img 
+                src="/wechat-qr.jpg.jpg" 
+                alt="WeChat QR Code"
+                className="w-full h-full object-contain"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                  e.currentTarget.parentElement!.innerHTML = '<div class="text-black text-center p-8"><p class="text-xl font-bold mb-4">请上传二维码</p><p class="text-sm text-gray-500">请将您的二维码图片重命名为 <b>wechat-qr.jpg.jpg</b> 并上传到 <b>public</b> 文件夹中。</p></div>';
+                }}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* AI Chat Window */}
       <ChatWindow isOpen={isChatOpen} onClose={() => setIsChatOpen(false)} />
@@ -888,7 +972,7 @@ function HomePage() {
 function AnimatedRoutes() {
   const location = useLocation();
   return (
-    <AnimatePresence>
+    <AnimatePresence mode="wait">
       {/* @ts-ignore - key is valid for React elements but missing in RoutesProps */}
       <Routes location={location} key={location.pathname}>
         <Route path="/" element={<HomePage />} />

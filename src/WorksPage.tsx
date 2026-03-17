@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 
 export default function WorksPage() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -86,8 +86,44 @@ export default function WorksPage() {
       try {
         const results = await Promise.all(bvids.map(async (bvid) => {
           const apiUrl = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
-          const response = await fetch(`https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(apiUrl)}`);
-          const data = await response.json();
+          
+          // Try multiple proxies in case one is down or blocked
+          const proxies = [
+            `https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}`,
+            `https://corsproxy.io/?${encodeURIComponent(apiUrl)}`,
+            `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(apiUrl)}`
+          ];
+
+          // 1. Check Cache first
+          const cacheKey = `bili_works_v2_${bvid}`;
+          const cached = localStorage.getItem(cacheKey);
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              if (Date.now() - parsed.timestamp < 1000 * 60 * 60 * 24 * 7) { // 7 days cache
+                return parsed.data;
+              }
+            } catch (e) {}
+          }
+
+          let data = null;
+          for (const proxy of proxies) {
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s strict timeout per proxy
+              const response = await fetch(proxy, { signal: controller.signal });
+              clearTimeout(timeoutId);
+              
+              if (!response.ok) continue;
+              const result = await response.json();
+              if (result && result.code === 0) {
+                data = result;
+                break; // Success, exit the proxy loop
+              }
+            } catch (e) {
+              // Timeout or network error, silently continue to next proxy
+            }
+          }
           
           if (data && data.code === 0) {
             const pubDate = new Date(data.data.pubdate * 1000);
@@ -96,15 +132,31 @@ export default function WorksPage() {
               coverUrl = coverUrl.replace('http://', 'https://');
             }
             
-            return {
+            const formattedResult = {
               bvid,
               title: data.data.title,
               author: data.data.owner.name,
               category: `${data.data.tname || "科技"} / ${pubDate.getFullYear()}`,
               cover: coverUrl
             };
+            
+            // Save to cache
+            localStorage.setItem(cacheKey, JSON.stringify({
+              timestamp: Date.now(),
+              data: formattedResult
+            }));
+            
+            return formattedResult;
           }
-          return null;
+          
+          // Fallback static data if all proxies fail
+          return {
+            bvid,
+            title: `Bilibili 视频 (${bvid})`,
+            author: "文子双汐",
+            category: "科技 / 2024",
+            cover: `https://picsum.photos/seed/${bvid}/1920/1080?blur=2`
+          };
         }));
         
         const validResults = results.filter(r => r !== null);
@@ -112,7 +164,7 @@ export default function WorksPage() {
           setVideosInfo(prev => prev.map(p => validResults.find(r => r.bvid === p.bvid) || p));
         }
       } catch (error) {
-        // Silently fail and use initial state if fetch fails
+        console.error("Failed to fetch Bilibili info:", error);
       }
     };
     fetchBilibiliInfo();
@@ -229,81 +281,128 @@ export default function WorksPage() {
     }
 
     let animationFrameId: number;
+    let cardMetrics: { center: number, width: number }[] = [];
+    let totalRulerWidth = 0;
+    let lastActiveIndex = -1;
+    let lastCurrent = -1;
+
+    const calculateMetrics = () => {
+      calculateMaxScroll();
+      
+      if (rulerRef.current) {
+        totalRulerWidth = rulerRef.current.scrollWidth;
+      }
+      
+      // Pre-calculate card positions to avoid layout thrashing in the animation loop
+      if (galleryRef.current) {
+        // Temporarily remove transform to get accurate initial positions
+        const currentTransform = galleryRef.current.style.transform;
+        galleryRef.current.style.transform = 'none';
+        
+        cardMetrics = cardsRef.current.map(card => {
+          if (!card) return { center: 0, width: 0 };
+          const rect = card.getBoundingClientRect();
+          return {
+            center: rect.left + rect.width / 2,
+            width: rect.width
+          };
+        });
+        
+        // Restore transform
+        galleryRef.current.style.transform = currentTransform;
+      }
+      // Force DOM update in the next frame to apply new metrics
+      lastCurrent = -1;
+    };
+
+    // Small delay to ensure layout is complete before calculating metrics
+    setTimeout(calculateMetrics, 100);
+    window.addEventListener('resize', calculateMetrics);
 
     const update = () => {
-      // Lerp for smooth inertia
+      // Lerp for smooth inertia (adjusted for smoother feel)
       currentRef.current += (targetRef.current - currentRef.current) * 0.08;
       
       // Round to avoid infinite tiny updates
-      if (Math.abs(targetRef.current - currentRef.current) < 0.01) {
+      if (Math.abs(targetRef.current - currentRef.current) < 0.05) {
         currentRef.current = targetRef.current;
       }
 
       const current = currentRef.current;
 
-      // 1. Move the gallery
-      if (galleryRef.current) {
-        galleryRef.current.style.transform = `translate3d(${-current}px, 0, 0)`;
-      }
+      // Only update DOM if the value has changed significantly
+      if (Math.abs(current - lastCurrent) > 0.01) {
+        lastCurrent = current;
 
-      // 3. 3D Visual Enhancement for cards
-      const windowWidth = window.innerWidth;
-      const center = windowWidth / 2;
-
-      let activeIndex = 0;
-      let minDist = Infinity;
-
-      cardsRef.current.forEach((card, index) => {
-        if (!card) return;
-        const rect = card.getBoundingClientRect();
-        const cardCenter = rect.left + rect.width / 2;
-        const dist = Math.abs(center - cardCenter);
-        
-        if (dist < minDist) {
-          minDist = dist;
-          activeIndex = index;
+        // 1. Move the gallery
+        if (galleryRef.current) {
+          galleryRef.current.style.transform = `translate3d(${-current}px, 0, 0)`;
         }
-        
-        // The distance at which the card reaches minimum scale/opacity
-        const maxDist = windowWidth * 0.5; 
-        const progress = Math.min(dist / maxDist, 1);
-        
-        // Smooth easing for the scale/opacity transition
-        const easeProgress = 1 - Math.pow(1 - progress, 2);
-        
-        const scale = 1 + (1 - easeProgress) * 0.15; // Scale up to 1.15 at center, 1 at edges
-        const opacity = 1 - easeProgress * 0.6; // Opacity down to 0.4 at edges
-        const zIndex = Math.round((1 - progress) * 100);
-        
-        card.style.transform = `scale(${scale})`;
-        card.style.opacity = Math.max(0.2, opacity).toString();
-        card.style.zIndex = zIndex.toString();
-      });
 
-      // 2. Move the ruler proportionally and center the active tick
-      if (rulerRef.current && maxScrollRef.current > 0) {
-        const scrollPercentage = current / maxScrollRef.current;
-        const rulerContainerWidth = 400;
-        const centerOffset = rulerContainerWidth / 2;
-        const totalRulerWidth = rulerRef.current.scrollWidth;
-        
-        // Smoothly interpolate the ruler position based on the continuous scroll percentage
-        const continuousTickPosition = scrollPercentage * (totalRulerWidth - 1);
-        
-        rulerRef.current.style.transform = `translate3d(${centerOffset - continuousTickPosition}px, 0, 0)`;
-        
-        // Highlight active tick
-        const ticks = rulerRef.current.children;
-        for (let i = 0; i < ticks.length; i++) {
-          const tick = ticks[i] as HTMLElement;
-          if (i === activeIndex) {
-            tick.style.opacity = '1';
-            tick.style.height = '100%';
-            tick.style.backgroundColor = '#ffffff';
-          } else {
-            tick.style.opacity = '0.2';
-            tick.style.height = '50%';
-            tick.style.backgroundColor = '#ffffff';
+        // 3. 3D Visual Enhancement for cards
+        const windowWidth = window.innerWidth;
+        const center = windowWidth / 2;
+
+        let activeIndex = 0;
+        let minDist = Infinity;
+
+        if (cardMetrics.length === cardsRef.current.length) {
+          cardsRef.current.forEach((card, index) => {
+            if (!card) return;
+            
+            // Calculate current center based on pre-calculated initial center and current scroll
+            const cardCenter = cardMetrics[index].center - current;
+            const dist = Math.abs(center - cardCenter);
+            
+            if (dist < minDist) {
+              minDist = dist;
+              activeIndex = index;
+            }
+            
+            // The distance at which the card reaches minimum scale/opacity
+            const maxDist = windowWidth * 0.5; 
+            const progress = Math.min(dist / maxDist, 1);
+            
+            // Smooth easing for the scale/opacity transition
+            const easeProgress = 1 - Math.pow(1 - progress, 2);
+            
+            const scale = 1 + (1 - easeProgress) * 0.15; // Scale up to 1.15 at center, 1 at edges
+            const opacity = 1 - easeProgress * 0.6; // Opacity down to 0.4 at edges
+            const zIndex = Math.round((1 - progress) * 100);
+            const rotateY = (cardCenter - center) / maxDist * 15; // Max rotation 15deg
+            
+            // Use will-change in CSS or here for better performance
+            card.style.transform = `translateZ(0) scale(${scale}) rotateY(${rotateY}deg)`;
+            card.style.opacity = Math.max(0.2, opacity).toString();
+            card.style.zIndex = zIndex.toString();
+          });
+        }
+
+        // 2. Move the ruler proportionally and center the active tick
+        if (rulerRef.current) {
+          const scrollPercentage = maxScrollRef.current > 0 ? current / maxScrollRef.current : 0;
+          
+          // Smoothly interpolate the ruler position based on the continuous scroll percentage
+          const continuousTickPosition = scrollPercentage * (totalRulerWidth - 1);
+          
+          rulerRef.current.style.transform = `translate3d(${-continuousTickPosition}px, 0, 0)`;
+          
+          // Highlight active tick only when it changes
+          if (activeIndex !== lastActiveIndex) {
+            const ticks = rulerRef.current.children;
+            for (let i = 0; i < ticks.length; i++) {
+              const tick = ticks[i] as HTMLElement;
+              if (i === activeIndex) {
+                tick.style.opacity = '1';
+                tick.style.height = '100%';
+                tick.style.backgroundColor = '#ffffff';
+              } else {
+                tick.style.opacity = '0.2';
+                tick.style.height = '50%';
+                tick.style.backgroundColor = '#ffffff';
+              }
+            }
+            lastActiveIndex = activeIndex;
           }
         }
       }
@@ -314,7 +413,7 @@ export default function WorksPage() {
     update();
 
     return () => {
-      window.removeEventListener('resize', calculateMaxScroll);
+      window.removeEventListener('resize', calculateMetrics);
       if (container) {
         container.removeEventListener('wheel', handleWheel);
         container.removeEventListener('touchstart', handleTouchStart);
@@ -336,8 +435,16 @@ export default function WorksPage() {
     const card = cardsRef.current[index];
     if (!card) return;
     
+    // Temporarily remove transform to get accurate position
+    const currentTransform = galleryRef.current?.style.transform || 'none';
+    if (galleryRef.current) galleryRef.current.style.transform = 'none';
+    
     const rect = card.getBoundingClientRect();
-    const cardCenter = rect.left + rect.width / 2;
+    const initialCardCenter = rect.left + rect.width / 2;
+    
+    if (galleryRef.current) galleryRef.current.style.transform = currentTransform;
+    
+    const cardCenter = initialCardCenter - currentRef.current;
     const windowCenter = window.innerWidth / 2;
     const dist = Math.abs(windowCenter - cardCenter);
     
@@ -353,6 +460,7 @@ export default function WorksPage() {
   };
 
   const handleRulerClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (maxScrollRef.current <= 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const percentage = clickX / rect.width;
@@ -361,44 +469,44 @@ export default function WorksPage() {
 
   return (
     <motion.div 
-      initial={{ opacity: 0, scale: 1.02, filter: 'blur(8px)' }}
-      animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
-      exit={{ opacity: 0, scale: 0.98, filter: 'blur(8px)' }}
+      initial={{ opacity: 0, scale: 1.02 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.98 }}
       transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
       ref={containerRef}
       className="h-screen w-full bg-[#050505] text-white overflow-hidden fixed inset-0 font-sans select-none"
     >
       {/* Top Nav */}
-      <nav className="absolute top-0 left-0 w-full p-8 flex justify-between items-center z-30 mix-blend-difference pointer-events-auto">
-        <Link to="/" className="flex items-center gap-2 cursor-pointer transition-opacity duration-500 ease-in-out opacity-80 hover:opacity-100">
+      <nav className="absolute top-0 left-0 w-full p-4 md:p-8 flex justify-between items-center z-30 mix-blend-difference pointer-events-auto">
+        <Link to="/" className="flex items-center gap-1 md:gap-2 cursor-pointer transition-opacity duration-500 ease-in-out opacity-80 hover:opacity-100">
           <img 
             src="/logo.jpg" 
             alt="文子双汐" 
-            className="h-8 md:h-10 w-auto object-contain"
+            className="h-6 md:h-10 w-auto object-contain"
           />
-          <div className="flex items-center h-8 md:h-10 ml-1">
-            <span className="text-white font-black tracking-[0.3em] text-xs md:text-sm uppercase border-y-[1.5px] border-white py-[3px] leading-none">
+          <div className="flex items-center h-6 md:h-10 ml-1">
+            <span className="text-white font-black tracking-[0.2em] md:tracking-[0.3em] text-[10px] md:text-sm uppercase border-y-[1px] md:border-y-[1.5px] border-white py-[2px] md:py-[3px] leading-none">
               STUDIO
             </span>
           </div>
         </Link>
         
-        <div className="absolute left-1/2 -translate-x-1/2 text-lg md:text-xl tracking-[0.3em] uppercase opacity-60 font-medium px-6 py-2">
+        <div className="hidden md:block absolute left-1/2 -translate-x-1/2 text-lg md:text-xl tracking-[0.3em] uppercase opacity-60 font-medium px-6 py-2">
           作品集
         </div>
 
-        <Link to="/" state={{ scrollTo: 'work' }} className="text-base md:text-lg tracking-[0.1em] uppercase opacity-60 hover:opacity-100 transition-opacity cursor-pointer px-6 py-2">
+        <Link to="/" state={{ scrollTo: 'work' }} className="text-sm md:text-lg tracking-[0.1em] uppercase opacity-60 hover:opacity-100 transition-opacity cursor-pointer px-2 md:px-6 py-2">
           关闭
         </Link>
       </nav>
 
       {/* Ruler Indicator */}
-      <div className="absolute top-24 left-1/2 -translate-x-1/2 w-[400px] overflow-hidden z-20">
+      <div className="absolute top-20 md:top-24 left-1/2 -translate-x-1/2 w-[280px] md:w-[400px] overflow-hidden z-20">
         <div 
           className="w-full h-8 cursor-pointer relative"
           onClick={handleRulerClick}
         >
-          <div ref={rulerRef} className="absolute top-0 left-0 flex items-end h-full gap-4 will-change-transform">
+          <div ref={rulerRef} className="absolute top-0 left-1/2 flex items-end h-full gap-4 will-change-transform">
             {videosInfo.map((work, i) => (
               <div 
                 key={`ruler-${work.bvid}`} 
@@ -416,18 +524,17 @@ export default function WorksPage() {
       </div>
 
       {/* Gallery */}
-      <div className="h-full w-full flex items-center pt-12">
+      <div className="h-full w-full flex items-center pt-12 md:pt-12" style={{ perspective: '1200px' }}>
         <div 
           ref={galleryRef} 
           // Padding left/right ensures the first and last items can be centered
-          className="flex gap-[4vw] px-[50vw] will-change-transform items-center h-full"
-          style={{ paddingLeft: 'calc(50vw - 10vw)', paddingRight: 'calc(50vw - 10vw)' }} // Adjust based on card width
+          className="flex gap-[6vw] md:gap-[4vw] px-[calc(50vw-35vw)] md:px-[calc(50vw-17.5vw)] lg:px-[calc(50vw-12.5vw)] will-change-transform items-center h-full"
         >
           {videosInfo.map((work, index) => (
             <div 
               key={work.bvid}
               ref={(el) => (cardsRef.current[index] = el)}
-              className="relative flex-shrink-0 w-[45vw] md:w-[25vw] lg:w-[20vw] aspect-[3/4] will-change-transform group cursor-pointer"
+              className="relative flex-shrink-0 w-[70vw] md:w-[35vw] lg:w-[25vw] aspect-[3/4] will-change-transform group cursor-pointer"
               style={{ transformOrigin: 'center center' }}
               onClick={() => handleCardClick(index, work.bvid)}
             >
@@ -462,28 +569,42 @@ export default function WorksPage() {
       </div>
       
       {/* Gallery */}
-      {isVideoModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 md:p-10">
-          <button 
-            className="absolute top-6 right-6 text-white/70 hover:text-white z-[101] transition-colors"
-            onClick={() => setIsVideoModalOpen(false)}
+      <AnimatePresence>
+        {isVideoModalOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4 md:p-10"
           >
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18"></line>
-              <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-          </button>
-          <div className="relative w-full max-w-5xl aspect-video bg-black rounded-lg overflow-hidden shadow-2xl">
-            <iframe 
-              src={`//player.bilibili.com/player.html?bvid=${activeBvid}&page=1&high_quality=1&danmaku=0&autoplay=1`}
-              className="w-full h-full border-0"
-              scrolling="no"
-              frameBorder="no"
-              allowFullScreen={true}
-            ></iframe>
-          </div>
-        </div>
-      )}
+            <button 
+              className="absolute top-6 right-6 text-white/70 hover:text-white z-[101] transition-colors"
+              onClick={() => setIsVideoModalOpen(false)}
+            >
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1], delay: 0.1 }}
+              className="relative w-full max-w-5xl aspect-video bg-black rounded-lg overflow-hidden shadow-2xl"
+            >
+              <iframe 
+                src={`//player.bilibili.com/player.html?bvid=${activeBvid}&page=1&high_quality=1&danmaku=0&autoplay=1`}
+                className="w-full h-full border-0"
+                scrolling="no"
+                frameBorder="no"
+                allowFullScreen={true}
+              ></iframe>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
