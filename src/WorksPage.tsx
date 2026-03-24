@@ -76,12 +76,33 @@ export default function WorksPage() {
       author: "",
       category: "",
       cover: ""
+    },
+    {
+      bvid: "BV18wwCzZEcQ",
+      title: "Loading...",
+      author: "",
+      category: "",
+      cover: ""
+    },
+    {
+      bvid: "BV19cAgzVEDh",
+      title: "Loading...",
+      author: "",
+      category: "",
+      cover: ""
+    },
+    {
+      bvid: "BV1BXQqBAEAm",
+      title: "Loading...",
+      author: "",
+      category: "",
+      cover: ""
     }
   ]);
 
   useEffect(() => {
     const fetchBilibiliInfo = async () => {
-      const bvids = ["BV1T3czzGE2V", "BV1cXwtzBE48", "BV1FXwtzBEzx", "BV1XuwbzdEsX", "BV1XuwbzdEUn", "BV1XuwbzdEmu", "BV1QuwbzdE1m", "BV1hMPjzdEM6", "BV1t3Pjz9E1i"];
+      const bvids = ["BV1T3czzGE2V", "BV1cXwtzBE48", "BV1FXwtzBEzx", "BV1XuwbzdEsX", "BV1XuwbzdEUn", "BV1XuwbzdEmu", "BV1QuwbzdE1m", "BV1hMPjzdEM6", "BV1t3Pjz9E1i", "BV18wwCzZEcQ", "BV19cAgzVEDh", "BV1BXQqBAEAm"];
       
       try {
         const results = await Promise.all(bvids.map(async (bvid) => {
@@ -524,17 +545,17 @@ export default function WorksPage() {
       </div>
 
       {/* Gallery */}
-      <div className="h-full w-full flex items-center pt-12 md:pt-12" style={{ perspective: '1200px' }}>
+      <div className="h-full w-full flex items-center pt-24 md:pt-32 pb-12" style={{ perspective: '1200px' }}>
         <div 
           ref={galleryRef} 
           // Padding left/right ensures the first and last items can be centered
-          className="flex gap-[6vw] md:gap-[4vw] px-[calc(50vw-35vw)] md:px-[calc(50vw-17.5vw)] lg:px-[calc(50vw-12.5vw)] will-change-transform items-center h-full"
+          className="flex gap-[6vw] md:gap-[4vw] px-[calc(50vw-30vw)] md:px-[calc(50vw-15vw)] lg:px-[calc(50vw-11vw)] will-change-transform items-center h-full"
         >
           {videosInfo.map((work, index) => (
             <div 
               key={work.bvid}
               ref={(el) => (cardsRef.current[index] = el)}
-              className="relative flex-shrink-0 w-[70vw] md:w-[35vw] lg:w-[25vw] aspect-[3/4] will-change-transform group cursor-pointer"
+              className="relative flex-shrink-0 w-[60vw] md:w-[30vw] lg:w-[22vw] aspect-[3/4] will-change-transform group cursor-pointer"
               style={{ transformOrigin: 'center center' }}
               onClick={() => handleCardClick(index, work.bvid)}
             >

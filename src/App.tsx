@@ -247,12 +247,36 @@ function HomePage() {
       category: "",
       year: "",
       cover: ""
+    },
+    {
+      bvid: "BV18wwCzZEcQ",
+      title: "Loading...",
+      author: "",
+      category: "",
+      year: "",
+      cover: ""
+    },
+    {
+      bvid: "BV19cAgzVEDh",
+      title: "Loading...",
+      author: "",
+      category: "",
+      year: "",
+      cover: ""
+    },
+    {
+      bvid: "BV1BXQqBAEAm",
+      title: "Loading...",
+      author: "",
+      category: "",
+      year: "",
+      cover: ""
     }
   ]);
 
   useEffect(() => {
     const fetchBilibiliInfo = async () => {
-      const bvids = ["BV1T3czzGE2V", "BV1FXwtzBEzx", "BV1XuwbzdEsX", "BV1cXwtzBE48", "BV1hMPjzdEM6", "BV1t3Pjz9E1i"];
+      const bvids = ["BV1T3czzGE2V", "BV1FXwtzBEzx", "BV1XuwbzdEsX", "BV1cXwtzBE48", "BV1hMPjzdEM6", "BV1t3Pjz9E1i", "BV18wwCzZEcQ", "BV19cAgzVEDh", "BV1BXQqBAEAm"];
       
       try {
         const results = await Promise.all(bvids.map(async (bvid) => {
